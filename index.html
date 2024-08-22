@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>LifeApp Stats Parser</title>
+
+  <script>
+    (function (global, factory) { typeof exports === "object" && typeof module !== "undefined" ? module.exports = factory() : typeof define === "function" && define.amd ? define(factory) : (global = global || self, global.Mustache = factory()) })(this, function () { "use strict"; var objectToString = Object.prototype.toString; var isArray = Array.isArray || function isArrayPolyfill(object) { return objectToString.call(object) === "[object Array]" }; function isFunction(object) { return typeof object === "function" } function typeStr(obj) { return isArray(obj) ? "array" : typeof obj } function escapeRegExp(string) { return string.replace(/[\-\[\]{}()*+?.,\\\^$|#\s]/g, "\\$&") } function hasProperty(obj, propName) { return obj != null && typeof obj === "object" && propName in obj } function primitiveHasOwnProperty(primitive, propName) { return primitive != null && typeof primitive !== "object" && primitive.hasOwnProperty && primitive.hasOwnProperty(propName) } var regExpTest = RegExp.prototype.test; function testRegExp(re, string) { return regExpTest.call(re, string) } var nonSpaceRe = /\S/; function isWhitespace(string) { return !testRegExp(nonSpaceRe, string) } var entityMap = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "/": "&#x2F;", "`": "&#x60;", "=": "&#x3D;" }; function escapeHtml(string) { return String(string).replace(/[&<>"'`=\/]/g, function fromEntityMap(s) { return entityMap[s] }) } var whiteRe = /\s*/; var spaceRe = /\s+/; var equalsRe = /\s*=/; var curlyRe = /\s*\}/; var tagRe = /#|\^|\/|>|\{|&|=|!/; function parseTemplate(template, tags) { if (!template) return []; var lineHasNonSpace = false; var sections = []; var tokens = []; var spaces = []; var hasTag = false; var nonSpace = false; var indentation = ""; var tagIndex = 0; function stripSpace() { if (hasTag && !nonSpace) { while (spaces.length) delete tokens[spaces.pop()] } else { spaces = [] } hasTag = false; nonSpace = false } var openingTagRe, closingTagRe, closingCurlyRe; function compileTags(tagsToCompile) { if (typeof tagsToCompile === "string") tagsToCompile = tagsToCompile.split(spaceRe, 2); if (!isArray(tagsToCompile) || tagsToCompile.length !== 2) throw new Error("Invalid tags: " + tagsToCompile); openingTagRe = new RegExp(escapeRegExp(tagsToCompile[0]) + "\\s*"); closingTagRe = new RegExp("\\s*" + escapeRegExp(tagsToCompile[1])); closingCurlyRe = new RegExp("\\s*" + escapeRegExp("}" + tagsToCompile[1])) } compileTags(tags || mustache.tags); var scanner = new Scanner(template); var start, type, value, chr, token, openSection; while (!scanner.eos()) { start = scanner.pos; value = scanner.scanUntil(openingTagRe); if (value) { for (var i = 0, valueLength = value.length; i < valueLength; ++i) { chr = value.charAt(i); if (isWhitespace(chr)) { spaces.push(tokens.length); indentation += chr } else { nonSpace = true; lineHasNonSpace = true; indentation += " " } tokens.push(["text", chr, start, start + 1]); start += 1; if (chr === "\n") { stripSpace(); indentation = ""; tagIndex = 0; lineHasNonSpace = false } } } if (!scanner.scan(openingTagRe)) break; hasTag = true; type = scanner.scan(tagRe) || "name"; scanner.scan(whiteRe); if (type === "=") { value = scanner.scanUntil(equalsRe); scanner.scan(equalsRe); scanner.scanUntil(closingTagRe) } else if (type === "{") { value = scanner.scanUntil(closingCurlyRe); scanner.scan(curlyRe); scanner.scanUntil(closingTagRe); type = "&" } else { value = scanner.scanUntil(closingTagRe) } if (!scanner.scan(closingTagRe)) throw new Error("Unclosed tag at " + scanner.pos); if (type == ">") { token = [type, value, start, scanner.pos, indentation, tagIndex, lineHasNonSpace] } else { token = [type, value, start, scanner.pos] } tagIndex++; tokens.push(token); if (type === "#" || type === "^") { sections.push(token) } else if (type === "/") { openSection = sections.pop(); if (!openSection) throw new Error('Unopened section "' + value + '" at ' + start); if (openSection[1] !== value) throw new Error('Unclosed section "' + openSection[1] + '" at ' + start) } else if (type === "name" || type === "{" || type === "&") { nonSpace = true } else if (type === "=") { compileTags(value) } } stripSpace(); openSection = sections.pop(); if (openSection) throw new Error('Unclosed section "' + openSection[1] + '" at ' + scanner.pos); return nestTokens(squashTokens(tokens)) } function squashTokens(tokens) { var squashedTokens = []; var token, lastToken; for (var i = 0, numTokens = tokens.length; i < numTokens; ++i) { token = tokens[i]; if (token) { if (token[0] === "text" && lastToken && lastToken[0] === "text") { lastToken[1] += token[1]; lastToken[3] = token[3] } else { squashedTokens.push(token); lastToken = token } } } return squashedTokens } function nestTokens(tokens) { var nestedTokens = []; var collector = nestedTokens; var sections = []; var token, section; for (var i = 0, numTokens = tokens.length; i < numTokens; ++i) { token = tokens[i]; switch (token[0]) { case "#": case "^": collector.push(token); sections.push(token); collector = token[4] = []; break; case "/": section = sections.pop(); section[5] = token[2]; collector = sections.length > 0 ? sections[sections.length - 1][4] : nestedTokens; break; default: collector.push(token) } } return nestedTokens } function Scanner(string) { this.string = string; this.tail = string; this.pos = 0 } Scanner.prototype.eos = function eos() { return this.tail === "" }; Scanner.prototype.scan = function scan(re) { var match = this.tail.match(re); if (!match || match.index !== 0) return ""; var string = match[0]; this.tail = this.tail.substring(string.length); this.pos += string.length; return string }; Scanner.prototype.scanUntil = function scanUntil(re) { var index = this.tail.search(re), match; switch (index) { case -1: match = this.tail; this.tail = ""; break; case 0: match = ""; break; default: match = this.tail.substring(0, index); this.tail = this.tail.substring(index) }this.pos += match.length; return match }; function Context(view, parentContext) { this.view = view; this.cache = { ".": this.view }; this.parent = parentContext } Context.prototype.push = function push(view) { return new Context(view, this) }; Context.prototype.lookup = function lookup(name) { var cache = this.cache; var value; if (cache.hasOwnProperty(name)) { value = cache[name] } else { var context = this, intermediateValue, names, index, lookupHit = false; while (context) { if (name.indexOf(".") > 0) { intermediateValue = context.view; names = name.split("."); index = 0; while (intermediateValue != null && index < names.length) { if (index === names.length - 1) lookupHit = hasProperty(intermediateValue, names[index]) || primitiveHasOwnProperty(intermediateValue, names[index]); intermediateValue = intermediateValue[names[index++]] } } else { intermediateValue = context.view[name]; lookupHit = hasProperty(context.view, name) } if (lookupHit) { value = intermediateValue; break } context = context.parent } cache[name] = value } if (isFunction(value)) value = value.call(this.view); return value }; function Writer() { this.templateCache = { _cache: {}, set: function set(key, value) { this._cache[key] = value }, get: function get(key) { return this._cache[key] }, clear: function clear() { this._cache = {} } } } Writer.prototype.clearCache = function clearCache() { if (typeof this.templateCache !== "undefined") { this.templateCache.clear() } }; Writer.prototype.parse = function parse(template, tags) { var cache = this.templateCache; var cacheKey = template + ":" + (tags || mustache.tags).join(":"); var isCacheEnabled = typeof cache !== "undefined"; var tokens = isCacheEnabled ? cache.get(cacheKey) : undefined; if (tokens == undefined) { tokens = parseTemplate(template, tags); isCacheEnabled && cache.set(cacheKey, tokens) } return tokens }; Writer.prototype.render = function render(template, view, partials, config) { var tags = this.getConfigTags(config); var tokens = this.parse(template, tags); var context = view instanceof Context ? view : new Context(view, undefined); return this.renderTokens(tokens, context, partials, template, config) }; Writer.prototype.renderTokens = function renderTokens(tokens, context, partials, originalTemplate, config) { var buffer = ""; var token, symbol, value; for (var i = 0, numTokens = tokens.length; i < numTokens; ++i) { value = undefined; token = tokens[i]; symbol = token[0]; if (symbol === "#") value = this.renderSection(token, context, partials, originalTemplate, config); else if (symbol === "^") value = this.renderInverted(token, context, partials, originalTemplate, config); else if (symbol === ">") value = this.renderPartial(token, context, partials, config); else if (symbol === "&") value = this.unescapedValue(token, context); else if (symbol === "name") value = this.escapedValue(token, context, config); else if (symbol === "text") value = this.rawValue(token); if (value !== undefined) buffer += value } return buffer }; Writer.prototype.renderSection = function renderSection(token, context, partials, originalTemplate, config) { var self = this; var buffer = ""; var value = context.lookup(token[1]); function subRender(template) { return self.render(template, context, partials, config) } if (!value) return; if (isArray(value)) { for (var j = 0, valueLength = value.length; j < valueLength; ++j) { buffer += this.renderTokens(token[4], context.push(value[j]), partials, originalTemplate, config) } } else if (typeof value === "object" || typeof value === "string" || typeof value === "number") { buffer += this.renderTokens(token[4], context.push(value), partials, originalTemplate, config) } else if (isFunction(value)) { if (typeof originalTemplate !== "string") throw new Error("Cannot use higher-order sections without the original template"); value = value.call(context.view, originalTemplate.slice(token[3], token[5]), subRender); if (value != null) buffer += value } else { buffer += this.renderTokens(token[4], context, partials, originalTemplate, config) } return buffer }; Writer.prototype.renderInverted = function renderInverted(token, context, partials, originalTemplate, config) { var value = context.lookup(token[1]); if (!value || isArray(value) && value.length === 0) return this.renderTokens(token[4], context, partials, originalTemplate, config) }; Writer.prototype.indentPartial = function indentPartial(partial, indentation, lineHasNonSpace) { var filteredIndentation = indentation.replace(/[^ \t]/g, ""); var partialByNl = partial.split("\n"); for (var i = 0; i < partialByNl.length; i++) { if (partialByNl[i].length && (i > 0 || !lineHasNonSpace)) { partialByNl[i] = filteredIndentation + partialByNl[i] } } return partialByNl.join("\n") }; Writer.prototype.renderPartial = function renderPartial(token, context, partials, config) { if (!partials) return; var tags = this.getConfigTags(config); var value = isFunction(partials) ? partials(token[1]) : partials[token[1]]; if (value != null) { var lineHasNonSpace = token[6]; var tagIndex = token[5]; var indentation = token[4]; var indentedValue = value; if (tagIndex == 0 && indentation) { indentedValue = this.indentPartial(value, indentation, lineHasNonSpace) } var tokens = this.parse(indentedValue, tags); return this.renderTokens(tokens, context, partials, indentedValue, config) } }; Writer.prototype.unescapedValue = function unescapedValue(token, context) { var value = context.lookup(token[1]); if (value != null) return value }; Writer.prototype.escapedValue = function escapedValue(token, context, config) { var escape = this.getConfigEscape(config) || mustache.escape; var value = context.lookup(token[1]); if (value != null) return typeof value === "number" && escape === mustache.escape ? String(value) : escape(value) }; Writer.prototype.rawValue = function rawValue(token) { return token[1] }; Writer.prototype.getConfigTags = function getConfigTags(config) { if (isArray(config)) { return config } else if (config && typeof config === "object") { return config.tags } else { return undefined } }; Writer.prototype.getConfigEscape = function getConfigEscape(config) { if (config && typeof config === "object" && !isArray(config)) { return config.escape } else { return undefined } }; var mustache = { name: "mustache.js", version: "4.2.0", tags: ["{{", "}}"], clearCache: undefined, escape: undefined, parse: undefined, render: undefined, Scanner: undefined, Context: undefined, Writer: undefined, set templateCache(cache) { defaultWriter.templateCache = cache }, get templateCache() { return defaultWriter.templateCache } }; var defaultWriter = new Writer; mustache.clearCache = function clearCache() { return defaultWriter.clearCache() }; mustache.parse = function parse(template, tags) { return defaultWriter.parse(template, tags) }; mustache.render = function render(template, view, partials, config) { if (typeof template !== "string") { throw new TypeError('Invalid template! Template should be a "string" ' + 'but "' + typeStr(template) + '" was given as the first ' + "argument for mustache#render(template, view, partials)") } return defaultWriter.render(template, view, partials, config) }; mustache.escape = escapeHtml; mustache.Scanner = Scanner; mustache.Context = Context; mustache.Writer = Writer; return mustache });
+  (function(){function n(n){var t=function(n,r){var o=u({},t,r||{});return e(n,o)};return u(t,{language:"en",spacer:" ",conjunction:"",serialComma:!0,units:["y","mo","w","d","h","m","s"],languages:{},round:!1,unitMeasures:{y:315576e5,mo:26298e5,w:6048e5,d:864e5,h:36e5,m:6e4,s:1e3,ms:1}},n)}function t(n){var t=[n.language];if(o(n,"fallbacks")){if(!l(n.fallbacks)||!n.fallbacks.length)throw new Error("fallbacks must be an array with at least one element");t=t.concat(n.fallbacks)}for(var e=0;e<t.length;e++){var r=t[e];if(o(n.languages,r))return n.languages[r];if(o(i,r))return i[r]}throw new Error("No language found.")}function e(n,e){var u,i,a;n=Math.abs(n);var l,s,c,f=t(e),m=[];for(u=0,i=e.units.length;u<i;u++){if(l=e.units[u],s=e.unitMeasures[l],u+1===i)if(o(e,"maxDecimalPoints")){var g=Math.pow(10,e.maxDecimalPoints),h=n/s;c=parseFloat((Math.floor(g*h)/g).toFixed(e.maxDecimalPoints))}else c=n/s;else c=Math.floor(n/s);m.push({unitCount:c,unitName:l}),n-=c*s}var d,p,v=0;for(u=0;u<m.length;u++)if(m[u].unitCount){v=u;break}if(e.round)for(u=m.length-1;u>=0&&(a=m[u],a.unitCount=Math.round(a.unitCount),0!==u);u--)p=m[u-1],d=e.unitMeasures[p.unitName]/e.unitMeasures[a.unitName],(a.unitCount%d==0||e.largest&&e.largest-1<u-v)&&(p.unitCount+=a.unitCount/d,a.unitCount=0);var y,C=[];for(u=0,m.length;u<i&&(a=m[u],a.unitCount&&C.push(r(a.unitCount,a.unitName,f,e)),C.length!==e.largest);u++);return C.length?(y=o(e,"delimiter")?e.delimiter:o(f,"delimiter")?f.delimiter:", ",e.conjunction&&1!==C.length?2===C.length?C.join(e.conjunction):C.length>2?C.slice(0,-1).join(y)+(e.serialComma?",":"")+e.conjunction+C.slice(-1):void 0:C.join(y)):r(0,e.units[e.units.length-1],f,e)}function r(n,t,e,r){var u,i;u=o(r,"decimal")?r.decimal:o(e,"decimal")?e.decimal:".",i="function"==typeof e._formatCount?e._formatCount(n,u):n.toString().replace(".",u);var a,l=e[t];return a="function"==typeof l?l(n):l,e._numberFirst?a+r.spacer+i:i+r.spacer+a}function u(n){for(var t,e=1;e<arguments.length;e++)for(var r in t=arguments[e],t)o(t,r)&&(n[r]=t[r]);return n}function o(n,t){return Object.prototype.hasOwnProperty.call(n,t)}var i={en:{y:function(n){return"year"+(1===n?"":"s")},mo:function(n){return"month"+(1===n?"":"s")},w:function(n){return"week"+(1===n?"":"s")},d:function(n){return"day"+(1===n?"":"s")},h:function(n){return"hour"+(1===n?"":"s")},m:function(n){return"minute"+(1===n?"":"s")},s:function(n){return"second"+(1===n?"":"s")},ms:function(n){return"millisecond"+(1===n?"":"s")},decimal:"."}},a=n({}),l=Array.isArray||function(n){return"[object Array]"===Object.prototype.toString.call(n)};a.getSupportedLanguages=function(){var n=[];for(var t in i)o(i,t)&&"gr"!==t&&n.push(t);return n},a.humanizer=n,"function"==typeof define&&define.amd?define(function(){return a}):"undefined"!=typeof module&&module.exports?module.exports=a:this.humanizeDuration=a})();
+  </script>
+    <!--
+    <script type="text/javascript" src="https://unpkg.com/mustache@2.3.0/mustache.min.js"></script>
+    -->
+    <style type="text/css">
+        body {
+            margin-top: 5em;
+            padding: 1em 4em;
+            text-align: center;
+            min-height: 150vh;
+            background-color: #ffffff;
+        }
+
+        * {
+            font-family: "PT Serif", Marion, "Iowan Old Style", "Hoefler Text",
+            "Charter", Baskerville, "Athelas", ".New York", Palatino, Georgia,
+            ".AppleSystemUIFont", Helvetica, Arial;
+            line-height: 1.6;
+        }
+
+        .ipa {
+            font-family: Symbol;
+            font-size: 13pt;
+        }
+
+        .container {
+            margin: 1em auto;
+            padding: 1em;
+        }
+
+        /*
+        input[type=submit] {
+          border: 1px dotted lightgray;
+          margin: 1em;
+          padding: 0.4em;
+          -webkit-border-radius: 4px;
+          -moz-border-radius: 4px;
+          border-radius: 4px;
+        }
+        */
+
+        .btn {
+            border: 0;
+            margin: 0 1em;
+            padding: 0.1em 0.4em;
+            background-image: -webkit-linear-gradient(top, #e2e1e1, #cfcfcf);
+            background-image: -moz-linear-gradient(top, #e2e1e1, #cfcfcf);
+            background-image: -ms-linear-gradient(top, #e2e1e1, #cfcfcf);
+            background-image: -o-linear-gradient(top, #e2e1e1, #cfcfcf);
+            background-image: linear-gradient(to bottom, #e2e1e1, #cfcfcf);
+            -webkit-border-radius: 4px;
+            -moz-border-radius: 4px;
+            border-radius: 4px;
+            -webkit-box-shadow: 2px 2px 3px #cecece;
+            -moz-box-shadow: 2px 2px 3px #cecece;
+            box-shadow: 2px 2px 3px #cecece;
+            font-family: Arial;
+            color: #ffffff;
+            font-size: 20px;
+            background: #e2e1e1;
+            text-decoration: none;
+        }
+
+        .btn-submit {
+            margin: .5em;
+            text-align: right;
+            background-color: #44c767;
+            color: white;
+            border-radius: 28px;
+            border: 1px solid #18ab29;
+            display: inline-block;
+            cursor: pointer;
+            font-size: 17px;
+            padding: 6px 12px;
+            text-decoration: none;
+            text-shadow: 0px 1px 0px #2f6627;
+        }
+
+        .btn-submit:hover {
+            background-color: #5cbf2a;
+        }
+
+        .btn-submit:active {
+            position: relative;
+            top: 1px;
+        }
+
+
+        #drop-area.highlight {
+            border: 5px dotted green;
+            background: lightgreen;
+        }
+
+        .btn:hover {
+            background: #f3f3f3;
+            background-image: -webkit-linear-gradient(top, #f3f3f3, #e2e1e1);
+            background-image: -moz-linear-gradient(top, #f3f3f3, #e2e1e1);
+            background-image: -ms-linear-gradient(top, #f3f3f3, #e2e1e1);
+            background-image: -o-linear-gradient(top, #f3f3f3, #e2e1e1);
+            background-image: linear-gradient(to bottom, #f3f3f3, #e2e1e1);
+            text-decoration: none;
+        }
+
+        input[type="text"] {
+            -webkit-box-shadow: rgba(29, 36, 23, 0.386719) -2px 3px 4px 0px;
+            -moz-box-shadow: rgba(29, 36, 23, 0.386719) -2px 3px 4px 0px;
+            box-shadow: rgba(29, 36, 23, 0.386719) -2px 3px 4px 0px;
+            -webkit-border-radius: 4px;
+            -moz-border-radius: 4px;
+            border-radius: 4px;
+            border: 0;
+            margin: 0 1em;
+            padding: 0.1em 0.4em;
+            font-size: 20px;
+        }
+
+        input[type="text"] {
+            background-color: rgb(250, 250, 250);
+        }
+
+        .src li {
+            font-size: 9pt;
+        }
+
+        dt {
+            font-size: 13pt;
+        }
+
+        hr {
+            border: 1px dotted lightgray;
+        }
+
+
+        a,
+        a:link,
+        a:visited {
+            cursor: pointer;
+            color: rgb(35, 148, 218);
+            text-decoration: none !important;
+            -webkit-transition: color 1s ease, background-color 1s ease;
+            -moz-transition: color 1s ease, background-color 1s ease;
+            -o-transition: color 1s ease, background-color 1s ease;
+            transition: color 1s ease, background-color 1s ease;
+        }
+
+        a:hover {
+            color: #86b692;
+            background-color: #daffcf;
+        }
+
+        .example {
+            list-style-type: "\1F4A1";
+            padding: 0.7em;
+        }
+
+        .syn li {
+            list-style-type: "\223C";
+            padding: 0.7em;
+        }
+
+        .ant li {
+            list-style-type: "\2260";
+            padding: 0.7em;
+        }
+
+        tr {
+            display: table-row;
+            vertical-align: inherit;
+            border-color: inherit;
+        }
+
+        td,
+        th {
+            border: 1px solid rgb(190, 190, 190);
+            padding: 5px 10px;
+        }
+
+        th {
+            display: table-cell;
+            vertical-align: inherit;
+            font-weight: bold;
+            text-align: -internal-center;
+        }
+
+        thead,
+        tfoot {
+            background-color: #3f87a6;
+            color: #fff;
+        }
+
+        table {
+            border-collapse: collapse;
+            border: 2px solid rgb(200, 200, 200);
+            letter-spacing: 1px;
+            font-family: sans-serif;
+        }
+
+        .g {
+            color: #686a66;
+            font-size: 9pt;
+        }
+
+        h1 {
+            color: #747074;
+        }
+
+        h3 {
+            font-size: 2em;
+            color: darkgray;
+            text-align: center;
+        }
+
+        /*
+    @media all and (min-width: 1024px) {
+      .container {
+        width: 650px;
+      }
+
+      #page {
+        width: 950px;
+      }
+    }
+    */
+
+        li {
+            text-align: left;
+        }
+
+        .note,
+        ol {
+            text-align: left;
+            padding: 0 20%;
+        }
+
+        textarea {
+            padding: 3px;
+            margin: 3px;
+            width: 95%;
+            border: 1px dashed lightgray;
+        }
+
+        .left {
+            display: inline-block;
+            position: relative;
+            width: 100%;
+            min-height: 490px;
+            border: 1px dashed lightgray;
+            background-color: #f9f9f9;
+            -webkit-border-radius: 4px;
+            -moz-border-radius: 4px;
+            border-radius: 4px;
+        }
+
+        @media (min-width: 768px) {
+            .left {
+                float: left;
+                /*position: fixed;*/
+                left: 0;
+                top: 0;
+                height: 100%;
+                width: 30%;
+            }
+        }
+
+        .right {
+            display: inline-block;
+            position: relative;
+            width: 100%;
+            min-height: 490px;
+            margin-left: 2em;
+            background-color: grey;
+        }
+
+        @media (min-width: 768px) {
+            .right {
+                float: right;
+                /*position: fixed;*/
+                right: 0;
+                top: 0;
+                height: 100%;
+                width: 70%;
+            }
+        }
+
+        tt {
+            font-family: monospace;
+            color: darkcyan;
+        }
+
+        @media print {
+            body {
+                margin-top: 1em;
+                padding: 1em 2em;
+                text-align: center;
+                min-height: 150vh;
+                background-color: #ffffff;
+            }
+            body > img {
+                width: 120px;
+                height: auto;
+            }
+
+            h1 {
+                font-size: 10pt;
+            }
+            h3 {
+                font-size: 16pt;
+            }
+            p, table, td, tr {
+                font-size: 12pt;
+            }
+            span.g {
+                font-size: 8pt;
+            }
+            .note, .info, .box {
+                display: none !important;
+            }
+        }
+    </style>
+</head>
+
+<body id="drop-area">
+<img
+        src="lifeapp.webp"
+        alt="">
+<h1>LifeApp Fasting Stats</h1>
+<p class="note">
+    Follow the steps described at <a target="_blank"
+                                     href="https://archive.is/IyyOA">Exporting
+    your data from LIFE mobile applications</a>:
+<ol class="info">
+    <li>Download the ZIP for your OS from <a target="_blank" href="https://github.com/lifeomic/cli/releases">lifeapp
+        export tool</a>
+    <li>Unpack the ZIP file and double-click <tt>life-export</tt> <span style="font-size:small">(on&nbsp;macOS&nbsp;right&#8209;click&nbsp;<span
+            style="color:#b2afaf">▶︎&nbsp;</span>Open; after first run OS might say the binary is unsigned and cannot be run —
+    go to <i>System Settings</i> <span
+            style="color:#b2afaf">▶︎&nbsp;</span> <i>Privacy and Security</i> and click the button to Allow, and then relaunch again.)</span></li>
+    <li>After the export is complete drag the file  <tt>Procedures.json</tt> into this window.</li>
+    </li>
+</ol>
+</p>
+<div class="box left">
+    <h3 id="file_name">[drop a file]</h3>
+    <div>
+        <form id="frm" name="frm" action="#">
+            <textarea id="txt" name="txt" rows="10"></textarea>
+            <br>
+            <div style="text-align: center">
+                <input type="file" id="fileUpload" accept="*" onchange="getFiles(this.files)">
+                <input class="btn-submit" type="submit" value="Render" onclick="render(); return false;">
+                <br><label class="hint" for="fileUpload">paste or drag <tt>Procedures.json</tt></label>
+            </div>
+        </form>
+    </div>
+</div>
+<div id="main" class="container rigth">
+</div>
+
+<script type="text/javascript">
+    var template = `
+      <table class="datatable">
+        <thead>
+            <h3>Fasting History <span style="font-size:12pt;"><a href="#" onclick="tableToCSV(); return false;">&#128206; download Excel</a></span></h3>
+            <tr>
+                <th scope="col">Start</th>
+                <th scope="col">End</th>
+                <th scope="col">Status</th>
+                <th scope="col">Duration</th>
+            </tr>
+        </thead>
+        <tbody>
+      {{#items}}
+      <tr>
+        <td>
+        {{#dateFormat}}{{performedPeriod.start}}{{/dateFormat}}
+
+          </td>
+          <td>
+        {{#extension}}
+          {{#dateFormat}}{{valuePeriod.end}}{{/dateFormat}}
+        {{/extension}}
+        {{^extension}}
+          {{#dateFormat}}{{performedPeriod.end}}{{/dateFormat}}
+        {{/extension}}
+          </td>
+          <td>
+            {{status}}
+          </td>
+          <td>
+            {{#timeDelta}}{{performedPeriod.end}}{{/timeDelta}}
+          </td>
+        </tr>
+      {{/items}}
+       </tbody>
+      </table>
+      `;
+
+    var dropArea = document.getElementById('drop-area');
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, preventDefaults, false)
+    })
+
+    function preventDefaults(e) {
+        e.preventDefault()
+        e.stopPropagation()
+    }
+
+    ;['dragenter', 'dragover'].forEach(eventName => {
+        dropArea.addEventListener(eventName, highlight, false)
+    })
+
+    ;['dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, unhighlight, false)
+    })
+
+    function render(isOnLoad) {
+        var data = JSON.parse(document.frm.txt.value);
+
+        if (!isOnLoad) {
+            localStorage.setItem("lifeappLastValue", document.frm.txt.value);
+        }
+        data.sort(function (a, b) {
+            return new Date(b.performedPeriod.start) - new Date(a.performedPeriod.start);
+        });
+        renderJson(data);
+    }
+
+    dropArea.addEventListener('drop', handleDrop, false);
+
+    function highlight(e) {
+        dropArea.classList.add('highlight')
+    }
+
+    function unhighlight(e) {
+        dropArea.classList.remove('highlight')
+    }
+
+    function handleDrop(e) {
+        var dt = e.dataTransfer
+        var files = dt.files
+        getFiles(files);
+    }
+
+    function getFiles(files) {
+        if (files) {
+            placeFileContent(
+                document.getElementById('txt'),
+                files.item(0))
+        }
+    }
+
+    function placeFileContent(target, file) {
+        readFileContent(file).then(content => {
+            target.value = content
+        }).then(() => {
+            render();
+        }).catch(error => console.log(error))
+    }
+
+    function readFileContent(file) {
+        const reader = new FileReader()
+        return new Promise((resolve, reject) => {
+            reader.onload = event => resolve(event.target.result)
+            reader.onerror = error => reject(error)
+            reader.readAsText(file)
+        })
+    }
+
+    // http://jsfiddle.net/QXFY4/10/
+    function renderJson(object) {
+        var html = Mustache.render(template, {
+            items: object,
+            dateFormat: function () {
+                return function (timestamp, render) {
+                    var dRendered = render(timestamp)
+                    return dRendered ? new Date(dRendered).toLocaleDateString(undefined, {
+                        day: "numeric",
+                        month: "short",
+                        year: "numeric",
+                        hour: "numeric",
+                        minute: "numeric",
+                    }) : '';
+                };
+            },
+            timeDelta: function () {
+                return function (timestamp, render) {
+                    var startDate = new Date(this.performedPeriod.start);
+
+                    var endDate;
+                    if (this.extension.length) {
+                        endDate = new Date(this.extension[0].valuePeriod.end);
+                    } else {
+                        endDate = new Date(this.performedPeriod.end);
+                    }
+                    var deltaInMillis = Math.abs(endDate - startDate);
+                    return `<span class="g">${humanizeDuration(deltaInMillis)}</span>`;
+                };
+            },
+        });
+        document.getElementById("main").innerHTML = html;
+    }
+
+    var lastValue = localStorage.getItem("lifeappLastValue");
+    if (lastValue) {
+        document.frm.txt.value = lastValue;
+        render(true);
+    }
+
+    function tableToCSV() {
+    const table = document.querySelector('.datatable');
+    const csvData = [];
+
+    function escapeCSV(value) {
+        let text = value.trim();
+        text = text.replace(/\r?\n|\r/g, ' ').replace(/"/g, '""');
+        if (/[",\r\n]/.test(text)) {
+            text = `"${text}"`;
+        }
+        return text;
+    }
+
+    Array.from(table.rows).forEach(row => {
+        const rowData = [];
+
+        Array.from(row.cells).forEach(cell => {
+            const cellText = cell.textContent || cell.innerText || '';
+            rowData.push(escapeCSV(cellText));
+        });
+
+        csvData.push(rowData.join(','));
+    });
+
+    const csvString = csvData.join('\n');
+
+    const blob = new Blob([csvString], { type: 'text/csv' });
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'lifefasting_export.csv';
+
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    URL.revokeObjectURL(url);
+}
+
+</script>
+
+</body>
+
+</html>
